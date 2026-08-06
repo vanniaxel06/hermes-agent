@@ -112,8 +112,21 @@ _CONTROL_CHARS = frozenset(";&|()")
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+_MAX_TOKENISE_BYTES = 64 * 1024
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
+    # Local mitigation for upstream #78398: the referenced-script walk has no
+    # breadth or total-byte bound, so any interpreter invoked by absolute path
+    # (e.g. `/root/.local/bin/node script.js`) sends this lexer spinning on a
+    # whole install directory — one core, minutes per terminal call. Capping
+    # the tokeniser bounds all three callers at once. Direct detection is
+    # unaffected: contains_gateway_lifecycle_command() still regexes the full
+    # raw text at every level, so `systemctl stop hermes-gateway` and friends
+    # are still blocked.
+    if command is not None and len(command) > _MAX_TOKENISE_BYTES:
+        return
     normalized = command.replace("\\\n", "")
     for line in normalized.splitlines() or [normalized]:
         try:
