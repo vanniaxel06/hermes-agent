@@ -1,0 +1,6 @@
+name: ollama-usage-tracker
+version: "1.0.0"
+description: "Logs every Ollama Cloud API call to the shared usage tracker so the cost dashboard reflects real spend. Opt-in via `hermes plugins enable observability/ollama-usage-tracker`."
+author: Vega
+hooks:
+  - post_api_request

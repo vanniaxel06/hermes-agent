@@ -39,6 +39,7 @@ import os
 import re
 import shlex
 import stat
+import sys
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -112,8 +113,40 @@ _CONTROL_CHARS = frozenset(";&|()")
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+# ---- HERMES_LOCAL_PATCH_2 2026-08-04 (not upstream) ----------------------
+# Ceiling on what we will shlex-tokenise. See upstream #78398.
+#
+# _iter_referenced_shell_scripts treats ANY token containing "/" as a
+# referenced-script candidate, reads up to _MAX_REFERENCED_SCRIPT_BYTES (1 MiB)
+# of it, and recurses into the decoded text — re-tokenising at each of
+# _MAX_REFERENCED_SCRIPT_DEPTH (8) levels. shlex is pure Python and its lexer
+# is reconstructed per line, so a megabyte of non-script content burns a core
+# for minutes.
+#
+# Observed twice on this box. Trigger both times was an ordinary command:
+#   cd /root/agentic-os && /root/.local/bin/node scripts/wiki-recent.js --slug ...
+# The guard followed /root/.local/bin/node into /root/.hermes/node/bin and
+# recursed. 99% CPU, ~18 min, gateway unresponsive. A first patch short-
+# circuited the macOS-only launchctl scan; the spin simply moved to the next
+# tokeniser (_iter_shell_command_payloads), which is why this bounds the
+# tokeniser itself rather than any single caller.
+#
+# Security: this only skips TOKENISER-BASED discovery of nested payloads and
+# referenced scripts in oversized blobs. contains_gateway_lifecycle_command()
+# — the regex over the raw text, and the actual lifecycle check — still runs on
+# every level including skipped ones, so a direct "systemctl stop
+# hermes-gateway" anywhere in that text is still caught. A real shell script
+# that stops the gateway is far below this ceiling.
+_MAX_TOKENISE_BYTES = 64 * 1024
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
+    if command is not None and len(command) > _MAX_TOKENISE_BYTES:
+        # Not a plausible shell command line. Skipping tokenisation here means
+        # nested payload/script discovery stops for this blob; the regex check
+        # in the caller still scans its full text.
+        return
     normalized = command.replace("\\\n", "")
     for line in normalized.splitlines() or [normalized]:
         try:
@@ -159,6 +192,28 @@ def contains_launchctl_submit_command(command: str) -> bool:
     semantics; ``bootstrap`` loads an arbitrary plist), which is never safe to
     do from inside the gateway process.
     """
+    # ---- HERMES_LOCAL_PATCH 2026-08-04 (not upstream) -------------------
+    # launchd is macOS-only. `launchctl` cannot exist on Linux or Windows, so
+    # on those platforms this function can only ever return False — but it
+    # costs a full shlex tokenisation to prove it, and this is the ONLY caller
+    # of _iter_command_segments.
+    #
+    # That tokenisation is the expensive path. On 2026-08-04 a Telegram request
+    # that merely invoked `node` pinned a core at 99% for 18 minutes of CPU:
+    # the guard resolved a reference under /root/.hermes/node/bin and shlex-
+    # tokenised up to _MAX_REFERENCED_SCRIPT_BYTES (1MiB) of non-script content
+    # one character at a time, repeated across _MAX_REFERENCED_SCRIPT_DEPTH (8)
+    # levels of recursion. The gateway stopped answering entirely.
+    #
+    # The NUL-byte screen above (#76762) catches ELF/Mach-O binaries but not
+    # large NUL-free text such as a minified JS bundle.
+    #
+    # Short-circuiting on non-Darwin loses no security: launchd does not exist
+    # there. The real lifecycle check, contains_gateway_lifecycle_command(), is
+    # a regex over the raw string and is unaffected.
+    if sys.platform != "darwin":
+        return False
+    # ---- end local patch -------------------------------------------------
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
