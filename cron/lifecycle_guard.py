@@ -39,6 +39,7 @@ import os
 import re
 import shlex
 import stat
+import sys
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -172,6 +173,19 @@ def contains_launchctl_submit_command(command: str) -> bool:
     semantics; ``bootstrap`` loads an arbitrary plist), which is never safe to
     do from inside the gateway process.
     """
+    # Local mitigation for upstream #78398, paired with the tokeniser cap
+    # above. launchd is macOS-only: `launchctl` cannot exist on Linux or
+    # Windows, so on those platforms this function can only ever return False —
+    # but proving it costs a full shlex pass over up to
+    # _MAX_REFERENCED_SCRIPT_BYTES per recursion level, and this is one of
+    # three independent tokenisations of the same input. Measured on the
+    # issue's 0.86 MB payload: 750 ms -> 0 ms.
+    #
+    # No security change off Darwin: launchd is unreachable there, and
+    # contains_gateway_lifecycle_command() — the regex over the raw string, and
+    # the actual lifecycle check — is untouched.
+    if sys.platform != "darwin":
+        return False
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
