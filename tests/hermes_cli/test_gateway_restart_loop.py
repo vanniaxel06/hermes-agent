@@ -8,6 +8,7 @@ Covers:
 
 import json
 import os
+import sys
 from argparse import Namespace
 
 import pytest
@@ -21,6 +22,24 @@ from hermes_cli.cron import (
 # ---------------------------------------------------------------------------
 # Defense 2: _contains_gateway_lifecycle_command pattern tests
 # ---------------------------------------------------------------------------
+
+# Fork-local (#78398): ``cron.lifecycle_guard.contains_launchctl_submit_command``
+# short-circuits to False off Darwin, because launchd cannot exist on Linux or
+# Windows. Assertions that depend ONLY on that function therefore cannot fire off
+# Darwin, and upstream's platform-agnostic expectation does not hold on this fork.
+#
+# Deliberately narrow: cases carrying a ``hermes``/``gateway`` token stay unmarked
+# and keep running everywhere, because the raw ``_GATEWAY_LIFECYCLE_PATTERN`` still
+# matches those on every platform. Only neutral-label submit/bootstrap shapes are
+# skipped.
+#
+# Remove this together with the #78398 mitigation if upstream ever bounds the
+# referenced-script walk itself.
+_launchd_only = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="#78398 fork mitigation: neutral-label launchctl detection is Darwin-only",
+)
+
 
 class TestGatewayLifecyclePattern:
     """Verify the regex catches gateway lifecycle commands."""
@@ -427,7 +446,9 @@ class TestTerminalToolGatewayLifecycleGuard:
         "launchctl kickstart gui/501/ai.hermes.gateway",
         # #62891 exact reported shape and its bootstrap sibling.
         "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
-        "launchctl submit -l com.foo -- /path/gateway",
+        pytest.param(
+            "launchctl submit -l com.foo -- /path/gateway", marks=_launchd_only
+        ),
         "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
         "pkill -f hermes.*gateway",
     ])
@@ -465,6 +486,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
 
+    @_launchd_only
     def test_blocks_launchctl_submit_inside_gateway(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -490,6 +512,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         # bootstrap variant: loads an arbitrary plist as a persistent job.
         "launchctl bootstrap gui/501 /tmp/com.foo.plist",
     ])
+    @_launchd_only
     def test_blocks_neutral_label_submit_and_bootstrap(self, monkeypatch, command):
         import tools.terminal_tool as tt
 
@@ -527,6 +550,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == [command]
 
+    @_launchd_only
     def test_blocks_launchctl_submit_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
@@ -574,6 +598,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @_launchd_only
     def test_launchctl_submit_parser_handles_shell_quoting(self, monkeypatch):
         import tools.terminal_tool as tt
 
@@ -598,6 +623,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @_launchd_only
     def test_shell_c_payload_recursively_scans_script(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -741,6 +767,7 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
+    @_launchd_only
     def test_script_with_launchctl_submit_raises(self, tmp_path):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "persistent.sh"
@@ -756,6 +783,7 @@ class TestLifecycleGuardModule:
         "launchctl submit -l com.foo -- /path/gateway",
         "launchctl bootstrap gui/501 /tmp/com.foo.plist",
     ])
+    @_launchd_only
     def test_script_with_neutral_label_submit_or_bootstrap_raises(
         self, tmp_path, line
     ):
