@@ -797,6 +797,28 @@ class TestBareTokenUserinfoRedaction:
         result = redact_sensitive_text(text)
         assert "ftptoken123456" not in result
 
+    def test_json_ld_context_is_not_userinfo(self):
+        """A quoted URL ends at its closing quote. JSON-LD puts ``"@type"`` straight
+        after ``"@context":"http://schema.org"``, and the two used to be read as
+        ``scheme://TOKEN@host``, so valid structured data reached the model as
+        ``"http://***@type"`` and looked malformed."""
+        from agent.redact import redact_terminal_output
+
+        text = '{"@context":"http://schema.org","@type":"WebSite","name":"Example"}'
+        assert redact_sensitive_text(text) == text
+        assert redact_terminal_output(text, "curl -sL https://example.com/") == text
+
+    def test_json_ld_https_context_and_id_unchanged(self):
+        text = '{"@context":"https://schema.org","@id":"https://example.com/#org","@type":"Organization"}'
+        assert redact_sensitive_text(text) == text
+
+    def test_quoted_bare_token_still_redacted(self):
+        """The fix narrows the token, not the rule: a credential inside quotes still goes."""
+        text = 'url = "https://MYPASSWORDWASDISLAYEDHERE@github.com/owner/repo.git"'
+        result = redact_sensitive_text(text)
+        assert "MYPASSWORDWASDISLAYEDHERE" not in result
+        assert "@github.com" in result
+
 
     def test_user_pass_form_still_passes_through(self):
         """The ``user:pass@`` colon form must NOT be redacted (#34029)."""

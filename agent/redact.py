@@ -532,9 +532,14 @@ _DB_CONNSTR_RE = re.compile(
 # ``user:pass@`` is deliberately left to pass through (commit "pass web URLs through unchanged", #34029) and
 # is NOT matched here — the token class forbids ``:``. DB schemes are handled by _DB_CONNSTR_RE above and
 # excluded here. Guards against false positives:
+# The token class also forbids the characters a URL cannot carry raw (``"<>\`{}|^``). Without that
+# a quoted URL followed by a key starting with ``@`` reads as userinfo: JSON-LD's
+# ``"@context":"http://schema.org","@type":"WebSite"`` came out as ``"http://***@type":"WebSite"``,
+# so valid structured data reached the model looking malformed. A real credential never holds one of
+# those characters unencoded, so nothing that was redacted before is let through.
 _URL_BARE_TOKEN_RE = re.compile(
     r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
-    r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
+    r"([^\s:@/\"<>\\`{}|^]{8,})"                    # bare token (no colon/slash/@, nothing a URL cannot carry raw), 8+ chars
     r"(@[^\s]+)",                                   # @host...
     re.IGNORECASE,
 )
